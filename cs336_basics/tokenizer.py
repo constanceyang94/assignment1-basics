@@ -1,9 +1,11 @@
 import regex as re
 import os
 
-# from .pretokenization_example import find_chunk_boundaries
+from multiprocessing import Pool
+from typing import BinaryIO
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+DELIMITER = "<|endoftext|>"
 
 
 class BPETokenizer:
@@ -19,6 +21,55 @@ class BPETokenizer:
         self.vocab = vocab
         self.merges = merges
         self.special_tokens = special_tokens
+
+
+def find_chunk_boundaries(
+    file: BinaryIO,
+    desired_num_chunks: int,
+    split_special_token: bytes,
+) -> list[int]:
+    """
+    Chunk the file into parts that can be counted independently.
+    May return fewer chunks if the boundaries end up overlapping.
+    """
+    assert isinstance(
+        split_special_token, bytes
+    ), "Must represent special token as a bytestring"
+
+    # Get total file size in bytes
+    file.seek(0, os.SEEK_END)
+    file_size = file.tell()
+    file.seek(0)
+
+    chunk_size = file_size // desired_num_chunks
+
+    # Initial guesses for chunk boundary locations, uniformly spaced
+    # Chunks start on previous index, don't include last index
+    chunk_boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
+    chunk_boundaries[-1] = file_size
+
+    mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
+
+    for bi in range(1, len(chunk_boundaries) - 1):
+        initial_position = chunk_boundaries[bi]
+        file.seek(initial_position)  # Start at boundary guess
+        while True:
+            mini_chunk = file.read(mini_chunk_size)  # Read a mini chunk
+
+            # If EOF, this boundary should be at the end of the file
+            if mini_chunk == b"":
+                chunk_boundaries[bi] = file_size
+                break
+
+            # Find the special token in the mini chunk
+            found_at = mini_chunk.find(split_special_token)
+            if found_at != -1:
+                chunk_boundaries[bi] = initial_position + found_at
+                break
+            initial_position += mini_chunk_size
+
+    # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
+    return sorted(set(chunk_boundaries))
 
 
 def train_bpe_tokenizer(
@@ -60,7 +111,7 @@ def train_bpe_tokenizer(
     if vocab_size - len(special_tokens) < 256:
         return vocab, merges
     for special_token in special_tokens:
-        vocab[len(vocab)] = bytes(special_token.encode("utf-8"))
+        vocab[len(vocab)] = special_token.encode("utf-8")
     pre_tokenizer_counts = pretokenize(input_path, special_tokens)
     for _ in range(vocab_size - len(special_tokens) - 256):
         compute_single_bpe_merge(pre_tokenizer_counts, merges, vocab)
@@ -76,21 +127,46 @@ def pretokenize(input_path: str | os.PathLike, special_tokens: list[str]):
         input_path: input path to training data.
         special_tokens: to split input data.
     """
-    pre_tokenizer_counts = {}
+    pre_tokenizer_counts_dicts = []
     special_pattern = "|".join(
         re.escape(t) for t in sorted(special_tokens, key=len, reverse=True)
     )
-    last_end = 0
+
     with open(input_path, "rb") as f:
-        chunk = f.read().decode("utf-8", errors="ignore")
-        if len(special_tokens) >= 1:
-            for match in re.finditer(special_pattern, chunk):
-                paragraph = chunk[last_end : match.start()]
-                last_end = match.end()
-                pretokenize_helper(pre_tokenizer_counts, paragraph)
-        paragraph = chunk[last_end : len(chunk)]
-        pretokenize_helper(pre_tokenizer_counts, paragraph)
+        num_processes = 8
+        parameter_list = []
+        boundaries = find_chunk_boundaries(f, num_processes, DELIMITER.encode("utf-8"))
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            parameter_list.append([input_path, special_pattern, start, end])
+
+    with Pool(processes=num_processes) as pool:
+        pre_tokenizer_counts_dicts = pool.starmap(multiprocess_helper, parameter_list)
+
+    pre_tokenizer_counts = {}
+    for count_dict in pre_tokenizer_counts_dicts:
+        for key in count_dict:
+            pre_tokenizer_counts[key] = (
+                pre_tokenizer_counts.get(key, 0) + count_dict[key]
+            )
+        # with Pool(processes=4) as pool:
+        #     pool.map(a, b)
     return pre_tokenizer_counts
+
+
+def multiprocess_helper(
+    input_path: str, special_pattern: str, start: int, end: int
+) -> dict[tuple, int]:
+    with open(input_path, "rb") as f:
+        f.seek(start)
+        chunk = f.read(end - start).decode("utf-8", errors="ignore")
+        pre_tokenizer_counts = {}
+        last_end = 0
+        for match in re.finditer(special_pattern, chunk):
+            paragraph = chunk[last_end : match.start()]
+            last_end = match.end()
+            pretokenize_helper(pre_tokenizer_counts, paragraph)
+        pretokenize_helper(pre_tokenizer_counts, chunk[last_end:])
+        return pre_tokenizer_counts
 
 
 def pretokenize_helper(
