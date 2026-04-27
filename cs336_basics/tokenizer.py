@@ -1,6 +1,7 @@
 import regex as re
 import os
 
+from collections import defaultdict
 from multiprocessing import Pool
 from typing import BinaryIO
 
@@ -21,6 +22,14 @@ class BPETokenizer:
         self.vocab = vocab
         self.merges = merges
         self.special_tokens = special_tokens
+
+
+class Node:
+    def __init__(self, value, word):
+        self.value = value
+        self.prev = None
+        self.next = None
+        self.word = word
 
 
 def find_chunk_boundaries(
@@ -103,7 +112,7 @@ def train_bpe_tokenizer(
     # 1. Pre-tokenizer
     # 2. Compute BPE merges
     # 3. Change pre-tokenizer to multiprocessing using pre-tokenization example
-    pre_tokenizer_counts = {}  # Dictionary mapping pre-token (bytes) to count (int)
+    pre_tokenizer_counts = defaultdict(int)  # Dictionary mapping pre-token (bytes) to count (int)
     merges = []  # List of merges, each merge is a tuple of bytes (<token1>, <token2>)
     vocab = {
         i: bytes([i]) for i in range(256)
@@ -113,8 +122,9 @@ def train_bpe_tokenizer(
     for special_token in special_tokens:
         vocab[len(vocab)] = special_token.encode("utf-8")
     pre_tokenizer_counts = pretokenize(input_path, special_tokens)
+    pair_counts, pair_position_dict = initialize_pair_counts(pre_tokenizer_counts)
     for _ in range(vocab_size - len(special_tokens) - 256):
-        compute_single_bpe_merge(pre_tokenizer_counts, merges, vocab)
+        compute_single_bpe_merge(pre_tokenizer_counts, merges, vocab, pair_counts, pair_position_dict)
     return vocab, merges
 
 
@@ -148,8 +158,6 @@ def pretokenize(input_path: str | os.PathLike, special_tokens: list[str]):
             pre_tokenizer_counts[key] = (
                 pre_tokenizer_counts.get(key, 0) + count_dict[key]
             )
-        # with Pool(processes=4) as pool:
-        #     pool.map(a, b)
     return pre_tokenizer_counts
 
 
@@ -181,39 +189,67 @@ def pretokenize_helper(
         pre_tokenizer_counts[token_tuple] = pre_tokenizer_counts.get(token_tuple, 0) + 1
 
 
+def initialize_pair_counts(pre_tokenizer_counts: dict[tuple[bytes, ...], int]):
+    pair_counts = defaultdict(int) # Store frequency for each pair
+    pair_position_dict = defaultdict(list) # Store words position for each pair
+    for token in pre_tokenizer_counts.keys():
+        prev_node = Node(token[0], token)
+        for i in range(len(token) - 1):
+            pair = (token[i], token[i + 1])
+            next_node = Node(token[i + 1], token)
+            prev_node.next = next_node
+            next_node.prev = prev_node
+            pair_counts[pair] += pre_tokenizer_counts[token]
+            pair_position_dict[pair].append(prev_node)
+            prev_node = next_node
+    return pair_counts, pair_position_dict
+
+
 def compute_single_bpe_merge(
     pre_tokenizer_counts: dict[tuple[bytes, ...], int],
     merges: list[tuple[bytes, bytes]],
     vocab: dict[int, bytes],
+    pair_counts: dict[tuple[bytes, bytes], int], 
+    pair_position_dict: dict[tuple[bytes, bytes], list[Node]]
 ):
     """
     Single BPE merge during tokenizer. Merge the token pair with the highest frequency and mutate
     pre_tokenizer_counts in place after the merge.
     The function modifies merge and vocab in place as well.
     """
-    pair_counts = {}
-    for token in pre_tokenizer_counts.keys():
-        for i in range(len(token) - 1):
-            pair = (token[i], token[i + 1])
-            pair_counts[pair] = pair_counts.get(pair, 0) + pre_tokenizer_counts[token]
     best_pair = max(pair_counts, key=lambda p: (pair_counts[p], p))
     merges.append(best_pair)
     vocab[len(vocab)] = best_pair[0] + best_pair[1]
-    for token in list(pre_tokenizer_counts.keys()):
-        token_tuple_new = []
-        i = 0
-        while i < len(token):
-            if i == len(token) - 1:
-                token_tuple_new.append(token[i])
-                break
-            pair = (token[i], token[i + 1])
-            if pair == best_pair:
-                token_tuple_new.append(pair[0] + pair[1])
-                i += 2
-            else:
-                token_tuple_new.append(token[i])
-                i += 1
-        token_tuple_new = tuple(token_tuple_new)
-        if token_tuple_new != token:
-            pre_tokenizer_counts[token_tuple_new] = pre_tokenizer_counts[token]
-            del pre_tokenizer_counts[token]
+    for node in pair_position_dict[best_pair]:
+        start_node = node
+        end_node = node.next
+        word_frequency = pre_tokenizer_counts[node.word]
+        if start_node.prev:
+            prev_node = start_node.prev
+            old_pair = (prev_node.value, best_pair[0])
+            new_pair = (prev_node.value, best_pair[0] + best_pair[1])
+            pair_counts[new_pair] += word_frequency
+            pair_counts[old_pair] -= word_frequency
+            pair_position_dict[old_pair].remove(prev_node)
+            pair_position_dict[new_pair].append(prev_node)
+            if pair_counts[old_pair] == 0:
+                del pair_counts[old_pair]
+                del pair_position_dict[old_pair]
+        if end_node.next:
+            next_node = end_node.next
+            old_pair = (best_pair[1], next_node.value)
+            new_pair = (best_pair[0] + best_pair[1], next_node.value)
+            pair_counts[new_pair] += word_frequency
+            pair_counts[old_pair] -= word_frequency
+            pair_position_dict[old_pair].remove(end_node)
+            pair_position_dict[new_pair].append(start_node)
+            if pair_counts[old_pair] == 0:
+                del pair_counts[old_pair]
+                del pair_position_dict[old_pair]
+        start_node.value = start_node.value + end_node.value
+        end_node.prev = None
+        start_node.next = end_node.next
+        if end_node.next:
+            end_node.next.prev = start_node
+        end_node.next = None
+    del pair_counts[best_pair]
