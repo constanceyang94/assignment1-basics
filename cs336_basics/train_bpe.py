@@ -8,22 +8,6 @@ from typing import BinaryIO
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 DELIMITER = "<|endoftext|>"
 
-
-class BPETokenizer:
-    def __init__(self, vocab, merges, special_tokens):
-        """
-        Initializes the BPE tokenizer with the given vocabulary, merges, and special tokens.
-
-        Args:
-            vocab: A dictionary mapping tokens to their corresponding IDs.
-            merges: A list of merge operations for the BPE algorithm.
-            special_tokens: A list of special tokens to be included in the tokenizer.
-        """
-        self.vocab = vocab
-        self.merges = merges
-        self.special_tokens = special_tokens
-
-
 class Node:
     def __init__(self, value, word):
         self.value = value
