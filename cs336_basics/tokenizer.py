@@ -52,18 +52,24 @@ class Tokenizer:
         Encode an input text into a sequence of token IDs.
         """
         encoded_list = []
-        special_pattern = "|".join(
-            re.escape(t) for t in sorted(self.special_tokens, key=len, reverse=True)
-        )
+        if self.special_tokens:
+            special_pattern = "|".join(
+                re.escape(t) for t in sorted(self.special_tokens, key=len, reverse=True)
+            )
         last_end = 0
-        for match in re.finditer(special_pattern, text):
-            paragraph = text[last_end : match.start()]
-            last_end = match.end()
-            for token_match in re.finditer(PAT, paragraph):
-                token = token_match.group().encode("utf-8")
-                token_tuple = tuple(bytes([b]) for b in token)
-                self.encode_helper(token_tuple, encoded_list)
-            encoded_list.append(self.encode_vocab[bytes(match.group().encode("utf-8"))]) 
+        if self.special_tokens:
+            for match in re.finditer(special_pattern, text):
+                paragraph = text[last_end : match.start()]
+                last_end = match.end()
+                for token_match in re.finditer(PAT, paragraph):
+                    token = token_match.group().encode("utf-8")
+                    token_tuple = tuple(bytes([b]) for b in token)
+                    self.encode_helper(token_tuple, encoded_list)
+                encoded_list.append(self.encode_vocab[bytes(match.group().encode("utf-8"))])
+        for token_match in re.finditer(PAT, text[last_end:]):
+            token = token_match.group().encode("utf-8")
+            token_tuple = tuple(bytes([b]) for b in token)
+            self.encode_helper(token_tuple, encoded_list)
         return encoded_list
             
     def encode_helper(self, token_tuple: tuple[bytes], encoded_list: list[int]):
@@ -103,3 +109,7 @@ class Tokenizer:
 
     def decode(self, ids: list[int]) -> str:
         "Decode a sequence of token IDs into text."
+        decoded_text = b""
+        for id in ids:
+            decoded_text += self.vocab[id]
+        return decoded_text.decode("utf-8")
