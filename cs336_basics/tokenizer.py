@@ -21,8 +21,7 @@ class Tokenizer:
         self.encode_vocab = {v: k for k, v in self.vocab.items()}
         self.merges = merges
         self.merges_dict = {v: i for i, v in enumerate(self.merges)}
-        if special_tokens:
-            self.special_tokens = special_tokens
+        self.special_tokens = special_tokens
 
     @classmethod
     def from_files(cls, vocab_filepath, merges_filepath, special_tokens=None):
@@ -106,10 +105,13 @@ class Tokenizer:
         """Given an iterable of strings (e.g., a Python file handle), return a generator that lazily yields token IDs.
         This is required for memory-efficient tokenization of large files that we cannot directly load into memory.
         """
+        for line in iterable:
+            encoded_list = self.encode(line)
+            yield from encoded_list   
 
     def decode(self, ids: list[int]) -> str:
         "Decode a sequence of token IDs into text."
         decoded_text = b""
         for id in ids:
             decoded_text += self.vocab[id]
-        return decoded_text.decode("utf-8")
+        return decoded_text.decode("utf-8", errors="replace")
