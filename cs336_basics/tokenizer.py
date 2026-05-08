@@ -1,16 +1,14 @@
+import ast
+import json
 import regex as re
-import os
 
-from collections import defaultdict
-from multiprocessing import Pool
-from typing import BinaryIO
+from collections.abc import Iterable, Iterator
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-DELIMITER = "<|endoftext|>"
 
 
-class BPETokenizer:
-    def __init__(self, vocab, merges, special_tokens):
+class Tokenizer:
+    def __init__(self, vocab, merges, special_tokens=None):
         """
         Initializes the BPE tokenizer with the given vocabulary, merges, and special tokens.
 
@@ -20,236 +18,100 @@ class BPETokenizer:
             special_tokens: A list of special tokens to be included in the tokenizer.
         """
         self.vocab = vocab
+        self.encode_vocab = {v: k for k, v in self.vocab.items()}
         self.merges = merges
+        self.merges_dict = {v: i for i, v in enumerate(self.merges)}
         self.special_tokens = special_tokens
 
+    @classmethod
+    def from_files(cls, vocab_filepath, merges_filepath, special_tokens=None):
+        """
+        Class method that constructs and returns a Tokenizer from a serialized vocabulary
+        and list of merges (in the same format that your BPE training code output)
+        and (optionally) a list of special tokens. This method should accept the following additional parameters:
 
-class Node:
-    def __init__(self, value, word):
-        self.value = value
-        self.prev = None
-        self.next = None
-        self.word = word
+        Args:
+            vocab_filepath: str
+            merges_filepath: str
+            special_tokens: list[str] | None = None
+        """
+        merges = []
+        with open(vocab_filepath, "r", encoding="utf-8") as f:
+            vocab: dict = json.load(f)
+        vocab = {int(k): bytes.fromhex(v) for k, v in vocab.items()}
+        with open(merges_filepath, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        for l in lines:
+            items = l.strip("()").split(",")
+            merges.append((ast.literal_eval(items[0]), ast.literal_eval(items[1])))
+        return cls(vocab, merges, special_tokens)
 
-
-def find_chunk_boundaries(
-    file: BinaryIO,
-    desired_num_chunks: int,
-    split_special_token: bytes,
-) -> list[int]:
-    """
-    Chunk the file into parts that can be counted independently.
-    May return fewer chunks if the boundaries end up overlapping.
-    """
-    assert isinstance(
-        split_special_token, bytes
-    ), "Must represent special token as a bytestring"
-
-    # Get total file size in bytes
-    file.seek(0, os.SEEK_END)
-    file_size = file.tell()
-    file.seek(0)
-
-    chunk_size = file_size // desired_num_chunks
-
-    # Initial guesses for chunk boundary locations, uniformly spaced
-    # Chunks start on previous index, don't include last index
-    chunk_boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
-    chunk_boundaries[-1] = file_size
-
-    mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
-
-    for bi in range(1, len(chunk_boundaries) - 1):
-        initial_position = chunk_boundaries[bi]
-        file.seek(initial_position)  # Start at boundary guess
-        while True:
-            mini_chunk = file.read(mini_chunk_size)  # Read a mini chunk
-
-            # If EOF, this boundary should be at the end of the file
-            if mini_chunk == b"":
-                chunk_boundaries[bi] = file_size
-                break
-
-            # Find the special token in the mini chunk
-            found_at = mini_chunk.find(split_special_token)
-            if found_at != -1:
-                chunk_boundaries[bi] = initial_position + found_at
-                break
-            initial_position += mini_chunk_size
-
-    # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
-    return sorted(set(chunk_boundaries))
-
-
-def train_bpe_tokenizer(
-    input_path: str | os.PathLike,
-    vocab_size: int,
-    special_tokens: list[str],
-) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
-    """
-    Given the path to an input corpus, run train a BPE tokenizer and
-    output its vocabulary and merges.
-
-    Args:
-        input_path (str | os.PathLike): Path to BPE tokenizer training data.
-        vocab_size (int): Total number of items in the tokenizer's vocabulary (including special tokens).
-        special_tokens (list[str]): A list of string special tokens to be added to the tokenizer vocabulary.
-            These strings will never be split into multiple tokens, and will always be
-            kept as a single token. If these special tokens occur in the `input_path`,
-            they are treated as any other string.
-
-    Returns:
-        tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
-            vocab:
-                The trained tokenizer vocabulary, a mapping from int (token ID in the vocabulary)
-                to bytes (token bytes)
-            merges:
-                BPE merges. Each list item is a tuple of bytes (<token1>, <token2>),
-                representing that <token1> was merged with <token2>.
-                Merges are ordered by order of creation.
-    """
-    # Plan:
-    # 1. Pre-tokenizer
-    # 2. Compute BPE merges
-    # 3. Change pre-tokenizer to multiprocessing using pre-tokenization example
-    pre_tokenizer_counts = defaultdict(int)  # Dictionary mapping pre-token (bytes) to count (int)
-    merges = []  # List of merges, each merge is a tuple of bytes (<token1>, <token2>)
-    vocab = {
-        i: bytes([i]) for i in range(256)
-    }  # Initialize vocab with single byte tokens
-    if vocab_size - len(special_tokens) < 256:
-        return vocab, merges
-    for special_token in special_tokens:
-        vocab[len(vocab)] = special_token.encode("utf-8")
-    pre_tokenizer_counts = pretokenize(input_path, special_tokens)
-    pair_counts, pair_position_dict = initialize_pair_counts(pre_tokenizer_counts)
-    for _ in range(vocab_size - len(special_tokens) - 256):
-        compute_single_bpe_merge(pre_tokenizer_counts, merges, vocab, pair_counts, pair_position_dict)
-    return vocab, merges
-
-
-def pretokenize(input_path: str | os.PathLike, special_tokens: list[str]):
-    """
-    Given the input path to BPE tokenizer training data and special tokens, splits around special
-    tokens, and applies the GPT-2 regex pattern to count pre-token occurrences.
-
-    Args:
-        input_path: input path to training data.
-        special_tokens: to split input data.
-    """
-    pre_tokenizer_counts_dicts = []
-    special_pattern = "|".join(
-        re.escape(t) for t in sorted(special_tokens, key=len, reverse=True)
-    )
-
-    with open(input_path, "rb") as f:
-        num_processes = 8
-        parameter_list = []
-        boundaries = find_chunk_boundaries(f, num_processes, DELIMITER.encode("utf-8"))
-        for start, end in zip(boundaries[:-1], boundaries[1:]):
-            parameter_list.append([input_path, special_pattern, start, end])
-
-    with Pool(processes=num_processes) as pool:
-        pre_tokenizer_counts_dicts = pool.starmap(multiprocess_helper, parameter_list)
-
-    pre_tokenizer_counts = {}
-    for count_dict in pre_tokenizer_counts_dicts:
-        for key in count_dict:
-            pre_tokenizer_counts[key] = (
-                pre_tokenizer_counts.get(key, 0) + count_dict[key]
+    def encode(self, text: str) -> list[int]:
+        """
+        Encode an input text into a sequence of token IDs.
+        """
+        encoded_list = []
+        if self.special_tokens:
+            special_pattern = "|".join(
+                re.escape(t) for t in sorted(self.special_tokens, key=len, reverse=True)
             )
-    return pre_tokenizer_counts
-
-
-def multiprocess_helper(
-    input_path: str, special_pattern: str, start: int, end: int
-) -> dict[tuple, int]:
-    with open(input_path, "rb") as f:
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        pre_tokenizer_counts = {}
         last_end = 0
-        for match in re.finditer(special_pattern, chunk):
-            paragraph = chunk[last_end : match.start()]
-            last_end = match.end()
-            pretokenize_helper(pre_tokenizer_counts, paragraph)
-        pretokenize_helper(pre_tokenizer_counts, chunk[last_end:])
-        return pre_tokenizer_counts
+        if self.special_tokens:
+            for match in re.finditer(special_pattern, text):
+                paragraph = text[last_end : match.start()]
+                last_end = match.end()
+                for token_match in re.finditer(PAT, paragraph):
+                    token = token_match.group().encode("utf-8")
+                    token_tuple = tuple(bytes([b]) for b in token)
+                    self.encode_helper(token_tuple, encoded_list)
+                encoded_list.append(self.encode_vocab[bytes(match.group().encode("utf-8"))])
+        for token_match in re.finditer(PAT, text[last_end:]):
+            token = token_match.group().encode("utf-8")
+            token_tuple = tuple(bytes([b]) for b in token)
+            self.encode_helper(token_tuple, encoded_list)
+        return encoded_list
+            
+    def encode_helper(self, token_tuple: tuple[bytes], encoded_list: list[int]):
+        """encoder helper to encode small chunk of text"""
+        find_merge = True
+        find_merge_order = float('inf')
+        while find_merge:
+            find_merge = False
+            find_merge_order = float('inf')
+            merge = ()
+            for i in range(1, len(token_tuple)):
+                cur_tuple = (token_tuple[i-1], token_tuple[i])
+                if cur_tuple in self.merges_dict:
+                    if self.merges_dict[cur_tuple] < find_merge_order:
+                        find_merge_order = self.merges_dict[cur_tuple]
+                        merge = cur_tuple
+                        find_merge = True
+            if find_merge:
+                merged_list = []
+                for i in range(1, len(token_tuple)):
+                    if i == 1:
+                        merged_list.append(token_tuple[0])
+                    cur_tuple = (token_tuple[i-1], token_tuple[i])
+                    if cur_tuple == merge:
+                        merged_list.pop()
+                        merged_list.append(token_tuple[i-1] + token_tuple[i])
+                    else:
+                        merged_list.append(token_tuple[i])
+                token_tuple = tuple(merged_list)
+        for item in token_tuple:
+            encoded_list.append(self.encode_vocab[item])
+        
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        """Given an iterable of strings (e.g., a Python file handle), return a generator that lazily yields token IDs.
+        This is required for memory-efficient tokenization of large files that we cannot directly load into memory.
+        """
+        for line in iterable:
+            encoded_list = self.encode(line)
+            yield from encoded_list   
 
-
-def pretokenize_helper(
-    pre_tokenizer_counts: dict[tuple[bytes, ...], int], paragraph: str
-):
-    """
-    pretokenize_helper which takes paragraph as input and mutate the pre_tokenizer_counts in place.
-    """
-    for token_match in re.finditer(PAT, paragraph):
-        token = token_match.group().encode("utf-8")
-        token_tuple = tuple(bytes([b]) for b in token)
-        pre_tokenizer_counts[token_tuple] = pre_tokenizer_counts.get(token_tuple, 0) + 1
-
-
-def initialize_pair_counts(pre_tokenizer_counts: dict[tuple[bytes, ...], int]):
-    pair_counts = defaultdict(int) # Store frequency for each pair
-    pair_position_dict = defaultdict(list) # Store words position for each pair
-    for token in pre_tokenizer_counts.keys():
-        prev_node = Node(token[0], token)
-        for i in range(len(token) - 1):
-            pair = (token[i], token[i + 1])
-            next_node = Node(token[i + 1], token)
-            prev_node.next = next_node
-            next_node.prev = prev_node
-            pair_counts[pair] += pre_tokenizer_counts[token]
-            pair_position_dict[pair].append(prev_node)
-            prev_node = next_node
-    return pair_counts, pair_position_dict
-
-
-def compute_single_bpe_merge(
-    pre_tokenizer_counts: dict[tuple[bytes, ...], int],
-    merges: list[tuple[bytes, bytes]],
-    vocab: dict[int, bytes],
-    pair_counts: dict[tuple[bytes, bytes], int], 
-    pair_position_dict: dict[tuple[bytes, bytes], list[Node]]
-):
-    """
-    Single BPE merge during tokenizer. Merge the token pair with the highest frequency and mutate
-    pre_tokenizer_counts in place after the merge.
-    The function modifies merge and vocab in place as well.
-    """
-    best_pair = max(pair_counts, key=lambda p: (pair_counts[p], p))
-    merges.append(best_pair)
-    vocab[len(vocab)] = best_pair[0] + best_pair[1]
-    for node in pair_position_dict[best_pair]:
-        start_node = node
-        end_node = node.next
-        word_frequency = pre_tokenizer_counts[node.word]
-        if start_node.prev:
-            prev_node = start_node.prev
-            old_pair = (prev_node.value, best_pair[0])
-            new_pair = (prev_node.value, best_pair[0] + best_pair[1])
-            pair_counts[new_pair] += word_frequency
-            pair_counts[old_pair] -= word_frequency
-            pair_position_dict[old_pair].remove(prev_node)
-            pair_position_dict[new_pair].append(prev_node)
-            if pair_counts[old_pair] == 0:
-                del pair_counts[old_pair]
-                del pair_position_dict[old_pair]
-        if end_node.next:
-            next_node = end_node.next
-            old_pair = (best_pair[1], next_node.value)
-            new_pair = (best_pair[0] + best_pair[1], next_node.value)
-            pair_counts[new_pair] += word_frequency
-            pair_counts[old_pair] -= word_frequency
-            pair_position_dict[old_pair].remove(end_node)
-            pair_position_dict[new_pair].append(start_node)
-            if pair_counts[old_pair] == 0:
-                del pair_counts[old_pair]
-                del pair_position_dict[old_pair]
-        start_node.value = start_node.value + end_node.value
-        end_node.prev = None
-        start_node.next = end_node.next
-        if end_node.next:
-            end_node.next.prev = start_node
-        end_node.next = None
-    del pair_counts[best_pair]
+    def decode(self, ids: list[int]) -> str:
+        "Decode a sequence of token IDs into text."
+        decoded_text = b""
+        for id in ids:
+            decoded_text += self.vocab[id]
+        return decoded_text.decode("utf-8", errors="replace")
