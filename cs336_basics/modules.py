@@ -77,3 +77,29 @@ class RMSNorm(torch.nn.Module):
         rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
         result = x / rms * self.weights
         return result.to(in_dtype)
+    
+class SwiGLU(torch.nn.Module):
+    def __init__(self, d_model: int, d_ff: int, device=None, dtype=None):
+        """
+        Args:
+            d_model (int): Dimensionality of the feedforward input and output.
+            d_ff (int): Dimensionality of the up-project happening internally to your swiglu.
+        """
+        super().__init__()
+        self.d_model = d_model
+        self.d_ff = d_ff
+        if device:
+            self.device = device
+        if dtype:
+            self.dtype = dtype 
+        self.w1_weight = torch.nn.Parameter(torch.ones(self.d_ff, self.d_model))
+        self.w2_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_ff))
+        self.w3_weight = torch.nn.Parameter(torch.ones(self.d_ff, self.d_model))
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        silu_res = self.silu(einsum(self.w1_weight, x, "ff model, ... model -> ... ff"))
+        w3_res = einsum(self.w3_weight, x, "ff model, ... model -> ... ff")
+        return einsum(self.w2_weight, (silu_res * w3_res), "model ff, ... ff -> ... model")
+    
+    def silu(self, x: torch.Tensor) -> torch.Tensor:
+        return x * torch.sigmoid(x)
