@@ -14,9 +14,9 @@ volume = modal.Volume.from_name("tokenizer-outputs", create_if_missing=True)
 
 @app.function(image=image,
                 volumes={"/bpe": volume},
-                cpu=8.0,       # Recommended: BPE training is heavy on CPU
-                memory=65536,  # Recommended: Allocate sufficient RAM for vocab/merges in memory
-                timeout=3600   # 1 hour timeout for large training runs)
+                cpu=4.0,       # Recommended: BPE training is heavy on CPU
+                memory=102400,  # Recommended: Allocate sufficient RAM for vocab/merges in memory
+                timeout=43200   # 12 hour timeout for large training runs)
             )
 def train_bpe():
     # Write input owt dataset into modal remote instance

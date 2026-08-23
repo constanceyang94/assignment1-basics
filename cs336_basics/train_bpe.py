@@ -1,4 +1,5 @@
 import regex as re
+import time
 import os
 
 from collections import defaultdict
@@ -105,10 +106,17 @@ def train_bpe_tokenizer(
         return vocab, merges
     for special_token in special_tokens:
         vocab[len(vocab)] = special_token.encode("utf-8")
+    start_time = time.time()
     pre_tokenizer_counts = pretokenize(input_path, special_tokens)
+    end_time = time.time()
+    print(f"pretokenize finished after {end_time - start_time} seconds")
     pair_counts, pair_position_dict = initialize_pair_counts(pre_tokenizer_counts)
-    for _ in range(vocab_size - len(special_tokens) - 256):
+    for i in range(vocab_size - len(special_tokens) - 256):
+        start_time = time.time()
         compute_single_bpe_merge(pre_tokenizer_counts, merges, vocab, pair_counts, pair_position_dict)
+        end_time = time.time()
+        if i % 100 == 0:
+            print(f"merge {i} collapse time {end_time - start_time} seconds")
     return vocab, merges
 
 
@@ -127,7 +135,7 @@ def pretokenize(input_path: str | os.PathLike, special_tokens: list[str]):
     )
 
     with open(input_path, "rb") as f:
-        num_processes = 8
+        num_processes = 4
         parameter_list = []
         boundaries = find_chunk_boundaries(f, num_processes, DELIMITER.encode("utf-8"))
         for start, end in zip(boundaries[:-1], boundaries[1:]):
