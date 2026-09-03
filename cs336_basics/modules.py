@@ -1,7 +1,7 @@
 import math
 import torch
 
-from einops import einsum
+from einops import einsum, rearrange
 from jaxtyping import Bool, Float
 from torch import Tensor
 
@@ -182,3 +182,41 @@ def scaled_dot_product_attention(Q: Float[Tensor, " ... queries d_k"],
     score = einsum(Q, K, "... q d_k, ... k d_k -> ... q k").masked_fill(~mask, float("-inf"))
     score = softmax(score / math.sqrt(K.shape[-1]), -1)
     return einsum(score, V, "... q k, ... k d_v -> ... q d_v")
+
+class MultiheadSelfAttention(torch.nn.Module):
+    def __init__(self, d_model: int, num_heads: int):
+        """
+        Args:
+            d_model (int): Dimensionality of the feedforward input and output.
+            num_heads (int): Number of heads to use in multi-headed attention.
+        """
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.q_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
+        self.k_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
+        self.v_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
+        self.o_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
+        
+    def forward(self, in_features: Float[Tensor, " ... sequence_length d_model"]) -> torch.Tensor:
+        """
+        in_features (Float[Tensor, "... sequence_length d_model"]): Tensor to run your implementation on.
+        """
+        seq_len = in_features.shape[-2]
+        
+        query = einsum(in_features, self.q_proj_weight, "... d, d_o d -> ... d_o") 
+        query = rearrange(query, '... seq_len (num_head d_k) -> ... num_head seq_len d_k', 
+                                num_head=self.num_heads)
+        key = einsum(in_features, self.k_proj_weight, "... d, d_o d -> ... d_o")
+        key = rearrange(key, '... seq_len (num_head d_k) -> ... num_head seq_len d_k', 
+                                        num_head=self.num_heads)
+        value = einsum(in_features, self.v_proj_weight, "... d, d_o d -> ... d_o")
+        value = rearrange(value, '... seq_len (num_head d_k) -> ... num_head seq_len d_k', 
+                                        num_head=self.num_heads)
+        
+        "scaled_dot_product_attention output shape would be ... num_head seq_len d_model/num_head"
+        mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool), diagonal=0)
+        attention_res = scaled_dot_product_attention(query, key, value, mask)
+
+        attention_res = rearrange(attention_res, '... num_head seq_len d_k -> ... seq_len (num_head d_k)')             
+        return einsum(attention_res, self.o_proj_weight, "... d, d_out d -> ... d_out")
