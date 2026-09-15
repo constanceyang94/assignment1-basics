@@ -2,7 +2,7 @@ import math
 import torch
 
 from einops import einsum, rearrange
-from jaxtyping import Bool, Float
+from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 
@@ -141,7 +141,6 @@ class RoPE(torch.nn.Module):
         """
         
         "Tensor size is ..., seq_len, d_k / 2, 2"
-        print("x shape is " + str(x.shape))
         reshaped_x = x.reshape((*x.shape[:-1], self.d_k // 2, 2))
         
         "Tensor size is ..., seq_len, d_k / 2"
@@ -198,7 +197,8 @@ class MultiheadSelfAttention(torch.nn.Module):
         self.v_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
         self.o_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
         
-    def forward(self, in_features: Float[Tensor, " ... sequence_length d_model"]) -> torch.Tensor:
+    def forward(self, in_features: Float[Tensor, " ... sequence_length d_model"], 
+                rope: RoPE | None = None, token_positions: Int[Tensor, " ... sequence_length"] | None = None) -> torch.Tensor:
         """
         in_features (Float[Tensor, "... sequence_length d_model"]): Tensor to run your implementation on.
         """
@@ -210,6 +210,10 @@ class MultiheadSelfAttention(torch.nn.Module):
         key = einsum(in_features, self.k_proj_weight, "... d, d_o d -> ... d_o")
         key = rearrange(key, '... seq_len (num_head d_k) -> ... num_head seq_len d_k', 
                                         num_head=self.num_heads)
+        if rope:
+            query = rope.forward(query, token_positions)
+            key = rope.forward(key, token_positions)
+        
         value = einsum(in_features, self.v_proj_weight, "... d, d_o d -> ... d_o")
         value = rearrange(value, '... seq_len (num_head d_k) -> ... num_head seq_len d_k', 
                                         num_head=self.num_heads)
@@ -220,3 +224,44 @@ class MultiheadSelfAttention(torch.nn.Module):
 
         attention_res = rearrange(attention_res, '... num_head seq_len d_k -> ... seq_len (num_head d_k)')             
         return einsum(attention_res, self.o_proj_weight, "... d, d_out d -> ... d_out")
+    
+class TransformerBlock(torch.nn.Module):
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, weights: dict[str, Tensor], rope: RoPE):
+        """
+        Args:
+            d_model (int): Dimensionality of the feedforward input and output.
+            num_heads (int): Number of heads to use in multi-headed attention.
+        """
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.rope = rope
+        self.rmsnorm_layer1 = RMSNorm(d_model, 1e-5)
+        self.rmsnorm_layer1.load_state_dict({"weights": weights["ln1.weight"]})
+        self.multihead_self_attention = MultiheadSelfAttention(d_model, num_heads)
+        self.multihead_self_attention.load_state_dict({"q_proj_weight": weights["attn.q_proj.weight"], 
+                                                        "k_proj_weight": weights["attn.k_proj.weight"],
+                                                        "v_proj_weight": weights["attn.v_proj.weight"],
+                                                        "o_proj_weight": weights["attn.output_proj.weight"]})
+        self.rmsnorm_layer2 = RMSNorm(d_model, 1e-5)
+        self.rmsnorm_layer2.load_state_dict({"weights": weights["ln2.weight"]})
+        self.swiglu = SwiGLU(d_model, d_ff)
+        self.swiglu.load_state_dict({"w1_weight": weights["ffn.w1.weight"], 
+                                     "w2_weight": weights["ffn.w2.weight"], 
+                                     "w3_weight": weights["ffn.w3.weight"]})
+        
+    def forward(self, in_features: Float[Tensor, " ... sequence_length d_model"], 
+                    token_positions: Int[Tensor, " ... sequence_length"] | None = None):
+        if not token_positions:
+            token_positions = torch.arange(
+                in_features.shape[-2],
+                device=in_features.device,
+            )
+        print("token_positions is " + str(token_positions))
+        first_half = in_features + \
+                        self.multihead_self_attention.forward(
+                            self.rmsnorm_layer1.forward(in_features), self.rope, token_positions)
+        output = first_half + self.swiglu(self.rmsnorm_layer2.forward(first_half))
+        return output
+    
