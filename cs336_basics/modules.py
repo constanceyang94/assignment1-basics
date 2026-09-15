@@ -2,7 +2,7 @@ import math
 import torch
 
 from einops import einsum, rearrange
-from jaxtyping import Bool, Float
+from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 
@@ -198,7 +198,8 @@ class MultiheadSelfAttention(torch.nn.Module):
         self.v_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
         self.o_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
         
-    def forward(self, in_features: Float[Tensor, " ... sequence_length d_model"]) -> torch.Tensor:
+    def forward(self, in_features: Float[Tensor, " ... sequence_length d_model"], 
+                rope: RoPE | None = None, token_positions: Int[Tensor, " ... sequence_length"] | None = None) -> torch.Tensor:
         """
         in_features (Float[Tensor, "... sequence_length d_model"]): Tensor to run your implementation on.
         """
@@ -210,6 +211,10 @@ class MultiheadSelfAttention(torch.nn.Module):
         key = einsum(in_features, self.k_proj_weight, "... d, d_o d -> ... d_o")
         key = rearrange(key, '... seq_len (num_head d_k) -> ... num_head seq_len d_k', 
                                         num_head=self.num_heads)
+        if rope:
+            query = rope.forward(query, token_positions)
+            key = rope.forward(key, token_positions)
+        
         value = einsum(in_features, self.v_proj_weight, "... d, d_o d -> ... d_o")
         value = rearrange(value, '... seq_len (num_head d_k) -> ... num_head seq_len d_k', 
                                         num_head=self.num_heads)
