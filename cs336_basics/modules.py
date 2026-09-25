@@ -1,9 +1,11 @@
 import math
 import torch
 
+from collections.abc import Callable
 from einops import einsum, rearrange
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+from typing import Optional
 
 
 def softmax(x: torch.Tensor, i_d: int) -> torch.Tensor:
@@ -340,3 +342,38 @@ class TransformerLM(torch.nn.Module):
         
         return output_embedding
 
+class AdamW(torch.optim.Optimizer):
+    def __init__(self, params, lr, weight_decay, betas, eps):
+        defaults = {"alpha": lr, "beta1": betas[0], "beta2": betas[1], "eps": eps, "weight_decay": weight_decay}
+        super().__init__(params, defaults)
+
+    def step(self, closure: Optional[Callable] = None):
+        loss = None if closure is None else closure()
+        for group in self.param_groups:
+            alpha = group["alpha"] # Get the learning rate.
+            beta1 = group["beta1"]
+            beta2 = group["beta2"]
+            eps = group["eps"]
+            weight_decay = group["weight_decay"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p] # Get state associated with p.
+                if len(state) == 0:
+                    state["t"] = 1
+                    state["m"] = torch.zeros_like(p.data)
+                    state["v"] = torch.zeros_like(p.data)
+                
+                t = state["t"]
+                m = state["m"]
+                v = state["v"]
+                alpha_t = alpha * math.sqrt(1 - pow(beta2, t)) / (1 - pow(beta1, t))
+                grad = p.grad.data # Get the gradient of loss with respect to p.
+                p.data -= alpha * weight_decay * p.data
+                m = beta1 * m + (1 - beta1) * grad
+                v = beta2 * v + (1 - beta2) * pow(grad, 2)
+                p.data -= alpha_t * m / (v.sqrt() + eps)
+                state["t"] = t + 1 # Increment iteration number.
+                state["m"] = m
+                state["v"] = v
+        return loss
