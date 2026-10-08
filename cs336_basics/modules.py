@@ -1,7 +1,7 @@
 import math
 import torch
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from einops import einsum, rearrange
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
@@ -51,6 +51,31 @@ def cross_entropy(inputs: Float[Tensor, " batch_size vocab_size"],
     inputs_reduce_by_max = torch.exp(inputs - max_element)
     processed_selected = torch.log(torch.sum(inputs_reduce_by_max, dim=-1, keepdim=True)) - selected_logits
     return torch.sum(processed_selected) / torch.numel(processed_selected)
+
+def lr_cosine_schedule(it: int, max_learning_rate: float, min_learning_rate: float,
+                        warmup_iters: int, cosine_cycle_iters: int) -> float:
+    if it < warmup_iters:
+        return (it / warmup_iters) * max_learning_rate
+    if it > cosine_cycle_iters:
+        return min_learning_rate
+    ratio = 1 + math.cos((it - warmup_iters) * math.pi / (cosine_cycle_iters - warmup_iters))
+    lr = min_learning_rate + ratio / 2 * (max_learning_rate - min_learning_rate)
+    return lr
+    
+def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float):
+    parameters_list = list(parameters)
+    l2_sum = 0
+    for p in parameters_list:
+        if p.grad is None:
+            continue
+        l2_sum += (p.grad ** 2).sum().item()
+    l2_norm = math.sqrt(l2_sum)
+    if l2_norm > max_l2_norm:
+        for p in parameters_list:
+            if p.grad is None:
+                continue
+            p.grad *= max_l2_norm / (l2_norm + 1e-6)
+    return
 
 class Linear(torch.nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
@@ -368,10 +393,9 @@ class AdamW(torch.optim.Optimizer):
                 m = state["m"]
                 v = state["v"]
                 alpha_t = alpha * math.sqrt(1 - pow(beta2, t)) / (1 - pow(beta1, t))
-                grad = p.grad.data # Get the gradient of loss with respect to p.
                 p.data -= alpha * weight_decay * p.data
-                m = beta1 * m + (1 - beta1) * grad
-                v = beta2 * v + (1 - beta2) * pow(grad, 2)
+                m = beta1 * m + (1 - beta1) * p.grad
+                v = beta2 * v + (1 - beta2) * pow(p.grad, 2)
                 p.data -= alpha_t * m / (v.sqrt() + eps)
                 state["t"] = t + 1 # Increment iteration number.
                 state["m"] = m
