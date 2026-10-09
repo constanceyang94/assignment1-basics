@@ -1,4 +1,5 @@
 import math
+import numpy.typing as npt
 import torch
 
 from collections.abc import Callable, Iterable
@@ -76,6 +77,20 @@ def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: flo
                 continue
             p.grad *= max_l2_norm / (l2_norm + 1e-6)
     return
+
+def get_batch(dataset: npt.NDArray, batch_size: int, context_length: int, 
+              device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    dataset_size = len(dataset)
+    input_start = torch.randint(low=0, high=(dataset_size - context_length), size=(batch_size,)).unsqueeze(1)
+    label_start = input_start + 1
+    offset = torch.arange(context_length).unsqueeze(0)
+    input_index = input_start + offset
+    label_index = label_start + offset
+    dataset_tensor = torch.from_numpy(dataset)
+    input_tensor = dataset_tensor[input_index].to(device)
+    label_tensor = dataset_tensor[label_index].to(device)
+    return (input_tensor, label_tensor)
+
 
 class Linear(torch.nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
