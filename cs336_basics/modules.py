@@ -1,12 +1,14 @@
 import math
 import numpy.typing as npt
+import os
 import torch
 
 from collections.abc import Callable, Iterable
 from einops import einsum, rearrange
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
-from typing import Optional
+from typing import Optional, IO, BinaryIO
+
 
 
 def softmax(x: torch.Tensor, i_d: int) -> torch.Tensor:
@@ -91,6 +93,23 @@ def get_batch(dataset: npt.NDArray, batch_size: int, context_length: int,
     label_tensor = dataset_tensor[label_index].to(device)
     return (input_tensor, label_tensor)
 
+def save_checkpoint(model: torch.nn.Module,
+                    optimizer: torch.optim.Optimizer,
+                    iteration: int,
+                    out: str | os.PathLike | BinaryIO | IO[bytes]):
+    ckpt = {}
+    ckpt["weights"] = model.state_dict()
+    ckpt["optimizer_state"] = optimizer.state_dict()
+    ckpt["iteration"] = iteration
+    torch.save(ckpt, out)
+
+def load_checkpoint(src: str | os.PathLike | BinaryIO | IO[bytes],
+                    model: torch.nn.Module,
+                    optimizer: torch.optim.Optimizer):
+    ckpt = torch.load(src)
+    model.load_state_dict(ckpt["weights"])
+    optimizer.load_state_dict(ckpt["optimizer_state"])
+    return ckpt["iteration"]
 
 class Linear(torch.nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
@@ -107,12 +126,12 @@ class Linear(torch.nn.Module):
             self.device = device
         if dtype:
             self.dtype = dtype 
-        self.weights = torch.empty(out_features, in_features)
+        self.weight = torch.empty(out_features, in_features)
         std = math.sqrt(2 / (self.in_features + self.out_features))
-        self.weights = torch.nn.Parameter(torch.nn.init.trunc_normal_(self.weights, 0, std, -3*std, 3*std))
+        self.weight = torch.nn.Parameter(torch.nn.init.trunc_normal_(self.weight, 0, std, -3*std, 3*std))
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return einsum(self.weights, x, "out in, ... in -> ... out")
+        return einsum(self.weight, x, "out in, ... in -> ... out")
         
 class Embedding(torch.nn.Module):
     def __init__(self, num_embeddings, embedding_dim, device=None, dtype=None):
@@ -129,11 +148,11 @@ class Embedding(torch.nn.Module):
             self.device = device
         if dtype:
             self.dtype = dtype 
-        self.weights = torch.empty(self.num_embeddings, self.embedding_dim)
-        self.weights = torch.nn.Parameter(torch.nn.init.trunc_normal_(self.weights, 0, 1, -3, 3))
+        self.weight = torch.empty(self.num_embeddings, self.embedding_dim)
+        self.weight = torch.nn.Parameter(torch.nn.init.trunc_normal_(self.weight, 0, 1, -3, 3))
         
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        return self.weights[token_ids]
+        return self.weight[token_ids]
     
 class RMSNorm(torch.nn.Module):
     "Root Mean Square Layer Normalization"
@@ -151,7 +170,7 @@ class RMSNorm(torch.nn.Module):
             self.device = device
         if dtype:
             self.dtype = dtype 
-        self.weights = torch.nn.Parameter(torch.ones(self.d_model))
+        self.weight = torch.nn.Parameter(torch.ones(self.d_model))
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -161,7 +180,7 @@ class RMSNorm(torch.nn.Module):
         in_dtype = x.dtype
         x = x.to(torch.float32)
         rms = torch.sqrt(torch.mean(x**2, dim=-1, keepdim=True) + self.eps)
-        result = x / rms * self.weights
+        result = x / rms * self.weight
         return result.to(in_dtype)
     
 class SwiGLU(torch.nn.Module):
@@ -178,14 +197,15 @@ class SwiGLU(torch.nn.Module):
             self.device = device
         if dtype:
             self.dtype = dtype 
-        self.w1_weight = torch.nn.Parameter(torch.ones(self.d_ff, self.d_model))
-        self.w2_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_ff))
-        self.w3_weight = torch.nn.Parameter(torch.ones(self.d_ff, self.d_model))
+        self.w1 = Linear(d_model, d_ff)
+        self.w2 = Linear(d_ff, d_model)
+        self.w3 = Linear(d_model, d_ff)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        silu_res = self.silu(einsum(self.w1_weight, x, "ff model, ... model -> ... ff"))
-        w3_res = einsum(self.w3_weight, x, "ff model, ... model -> ... ff")
-        return einsum(self.w2_weight, (silu_res * w3_res), "model ff, ... ff -> ... model")
+        silu_res = self.silu(self.w1.forward(x))
+        w3_res = self.w3.forward(x)
+        output = self.w2.forward(silu_res * w3_res)
+        return output
     
     def silu(self, x: torch.Tensor) -> torch.Tensor:
         return x * torch.sigmoid(x)
@@ -245,10 +265,10 @@ class MultiheadSelfAttention(torch.nn.Module):
         super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
-        self.q_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
-        self.k_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
-        self.v_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
-        self.o_proj_weight = torch.nn.Parameter(torch.ones(self.d_model, self.d_model))
+        self.q_proj = Linear(self.d_model, self.d_model)
+        self.k_proj = Linear(self.d_model, self.d_model)
+        self.v_proj = Linear(self.d_model, self.d_model)
+        self.output_proj = Linear(self.d_model, self.d_model)
         
     def forward(self, in_features: Float[Tensor, " ... sequence_length d_model"], 
                 rope: RoPE | None = None, token_positions: Int[Tensor, " ... sequence_length"] | None = None) -> torch.Tensor:
@@ -257,17 +277,17 @@ class MultiheadSelfAttention(torch.nn.Module):
         """
         seq_len = in_features.shape[-2]
         
-        query = einsum(in_features, self.q_proj_weight, "... d, d_o d -> ... d_o") 
+        query = self.q_proj.forward(in_features)
         query = rearrange(query, '... seq_len (num_head d_k) -> ... num_head seq_len d_k', 
                                 num_head=self.num_heads)
-        key = einsum(in_features, self.k_proj_weight, "... d, d_o d -> ... d_o")
+        key = self.k_proj.forward(in_features)
         key = rearrange(key, '... seq_len (num_head d_k) -> ... num_head seq_len d_k', 
                                         num_head=self.num_heads)
         if rope:
             query = rope.forward(query, token_positions)
             key = rope.forward(key, token_positions)
         
-        value = einsum(in_features, self.v_proj_weight, "... d, d_o d -> ... d_o")
+        value = self.v_proj.forward(in_features)
         value = rearrange(value, '... seq_len (num_head d_k) -> ... num_head seq_len d_k', 
                                         num_head=self.num_heads)
         
@@ -275,11 +295,12 @@ class MultiheadSelfAttention(torch.nn.Module):
         mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool), diagonal=0)
         attention_res = scaled_dot_product_attention(query, key, value, mask)
 
-        attention_res = rearrange(attention_res, '... num_head seq_len d_k -> ... seq_len (num_head d_k)')             
-        return einsum(attention_res, self.o_proj_weight, "... d, d_out d -> ... d_out")
+        attention_res = rearrange(attention_res, '... num_head seq_len d_k -> ... seq_len (num_head d_k)') 
+        output = self.output_proj.forward(attention_res)            
+        return output
     
 class TransformerBlock(torch.nn.Module):
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, weights: dict[str, Tensor], rope: RoPE):
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, rope: RoPE):
         """
         Args:
             d_model (int): Dimensionality of the feedforward input and output.
@@ -290,19 +311,10 @@ class TransformerBlock(torch.nn.Module):
         self.num_heads = num_heads
         self.d_ff = d_ff
         self.rope = rope
-        self.rmsnorm_layer1 = RMSNorm(d_model, 1e-5)
-        self.rmsnorm_layer1.load_state_dict({"weights": weights["ln1.weight"]})
-        self.multihead_self_attention = MultiheadSelfAttention(d_model, num_heads)
-        self.multihead_self_attention.load_state_dict({"q_proj_weight": weights["attn.q_proj.weight"], 
-                                                        "k_proj_weight": weights["attn.k_proj.weight"],
-                                                        "v_proj_weight": weights["attn.v_proj.weight"],
-                                                        "o_proj_weight": weights["attn.output_proj.weight"]})
-        self.rmsnorm_layer2 = RMSNorm(d_model, 1e-5)
-        self.rmsnorm_layer2.load_state_dict({"weights": weights["ln2.weight"]})
-        self.swiglu = SwiGLU(d_model, d_ff)
-        self.swiglu.load_state_dict({"w1_weight": weights["ffn.w1.weight"], 
-                                     "w2_weight": weights["ffn.w2.weight"], 
-                                     "w3_weight": weights["ffn.w3.weight"]})
+        self.ln1 = RMSNorm(d_model, 1e-5)
+        self.attn = MultiheadSelfAttention(d_model, num_heads)
+        self.ln2 = RMSNorm(d_model, 1e-5)
+        self.ffn = SwiGLU(d_model, d_ff)
         
     def forward(self, in_features: Float[Tensor, " ... sequence_length d_model"], 
                     token_positions: Int[Tensor, " ... sequence_length"] | None = None):
@@ -312,22 +324,19 @@ class TransformerBlock(torch.nn.Module):
                 device=in_features.device,
             )
         first_half = in_features + \
-                        self.multihead_self_attention.forward(
-                            self.rmsnorm_layer1.forward(in_features), self.rope, token_positions)
-        output = first_half + self.swiglu(self.rmsnorm_layer2.forward(first_half))
+                        self.attn.forward(self.ln1.forward(in_features), self.rope, token_positions)
+        output = first_half + self.ffn(self.ln2.forward(first_half))
         return output
 
 class TransformerLM(torch.nn.Module):
-    def __init__(
-        self, 
-        vocab_size: int,
-        context_length: int,
-        d_model: int,
-        num_layers: int,
-        num_heads: int,
-        d_ff: int,
-        rope_theta: float,
-        weights: dict[str, Tensor]):
+    def __init__(self, 
+                vocab_size: int,
+                context_length: int,
+                d_model: int,
+                num_layers: int,
+                num_heads: int,
+                d_ff: int,
+                rope_theta: float):
         """
         Args:
             d_model (int): Dimensionality of the feedforward input and output.
@@ -341,44 +350,27 @@ class TransformerLM(torch.nn.Module):
         self.num_heads = num_heads
         self.d_ff = d_ff
         self.rope_theta = rope_theta
-        self.weights = weights
+        self.token_embeddings = Embedding(self.vocab_size, self.d_model)
+        self.rope = RoPE(self.rope_theta, self.d_model // self.num_heads, self.context_length)
+        self.layers = torch.nn.ModuleList()
+        for _ in range(self.num_layers):
+            self.layers.append(TransformerBlock(self.d_model, self.num_heads, self.d_ff, self.rope))
+        self.ln_final = RMSNorm(self.d_model, 1e-5)
+        self.lm_head = Linear(self.d_model, self.vocab_size)
             
-    def construct_weights(self, layer_id : int):
-        transformer_block_weights = {}
-        transformer_block_weights["ln1.weight"] = self.weights[f"layers.{layer_id}.ln1.weight"]
-        transformer_block_weights["attn.q_proj.weight"] = self.weights[f"layers.{layer_id}.attn.q_proj.weight"]
-        transformer_block_weights["attn.k_proj.weight"] = self.weights[f"layers.{layer_id}.attn.k_proj.weight"]
-        transformer_block_weights["attn.v_proj.weight"] = self.weights[f"layers.{layer_id}.attn.v_proj.weight"]
-        transformer_block_weights["attn.output_proj.weight"] = self.weights[f"layers.{layer_id}.attn.output_proj.weight"]
-        transformer_block_weights["ln2.weight"] = self.weights[f"layers.{layer_id}.ln2.weight"]
-        transformer_block_weights["ffn.w1.weight"] = self.weights[f"layers.{layer_id}.ffn.w1.weight"]
-        transformer_block_weights["ffn.w2.weight"] = self.weights[f"layers.{layer_id}.ffn.w2.weight"]
-        transformer_block_weights["ffn.w3.weight"] = self.weights[f"layers.{layer_id}.ffn.w3.weight"]
-        return transformer_block_weights
-    
     def forward(self, in_indices: Int[Tensor, " batch_size sequence_length"]) -> torch.Tensor:
-        rope = RoPE(self.rope_theta, self.d_model // self.num_heads, self.context_length)
-        
         "Get input embeddings. Tensor size is batch_size sequence_length d_model"
-        token_embedding = Embedding(self.vocab_size, self.d_model)
-        token_embedding.load_state_dict({"weights": self.weights["token_embeddings.weight"]})
-        in_features = token_embedding.forward(in_indices)
+        in_features = self.token_embeddings.forward(in_indices)
         
         "Transformer Block"
         for i in range(self.num_layers):
-            transformer_block_weights = self.construct_weights(i)
-            in_features = TransformerBlock(self.d_model, self.num_heads, self.d_ff, 
-                                            transformer_block_weights, rope).forward(in_features)
+            in_features = self.layers[i].forward(in_features)
         
         "Norm"
-        rmsnorm_final_layer = RMSNorm(self.d_model, 1e-5)
-        rmsnorm_final_layer.load_state_dict({"weights": self.weights["ln_final.weight"]})
-        norm_features = rmsnorm_final_layer.forward(in_features)
+        norm_features = self.ln_final.forward(in_features)
         
         "Linear"
-        linear_layer = Linear(self.d_model, self.vocab_size)
-        linear_layer.load_state_dict({"weights": self.weights["lm_head.weight"]})
-        output_embedding = linear_layer.forward(norm_features)
+        output_embedding = self.lm_head.forward(norm_features)
         
         return output_embedding
 

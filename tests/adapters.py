@@ -30,7 +30,7 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
     linear_layer = Linear(d_in, d_out)
-    linear_layer.load_state_dict({"weights": weights})
+    linear_layer.load_state_dict({"weight": weights})
     return linear_layer.forward(in_features)
 
 
@@ -53,7 +53,7 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
     embedding = Embedding(vocab_size, d_model)
-    embedding.load_state_dict({"weights": weights})
+    embedding.load_state_dict({"weight": weights})
     return embedding.forward(token_ids)
 
 
@@ -87,7 +87,7 @@ def run_swiglu(
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
     swiglu = SwiGLU(d_model, d_ff)
-    swiglu.load_state_dict({"w1_weight": w1_weight, "w2_weight": w2_weight, "w3_weight": w3_weight})
+    swiglu.load_state_dict({"w1.weight": w1_weight, "w2.weight": w2_weight, "w3.weight": w3_weight})
     return swiglu.forward(in_features)
 
 
@@ -144,10 +144,10 @@ def run_multihead_self_attention(
         implementation with the given QKV projection weights and input features.
     """
     multihead_self_attention = MultiheadSelfAttention(d_model, num_heads)
-    multihead_self_attention.load_state_dict({"q_proj_weight": q_proj_weight, 
-                                              "k_proj_weight": k_proj_weight,
-                                              "v_proj_weight": v_proj_weight,
-                                              "o_proj_weight": o_proj_weight})
+    multihead_self_attention.load_state_dict({"q_proj.weight": q_proj_weight, 
+                                              "k_proj.weight": k_proj_weight,
+                                              "v_proj.weight": v_proj_weight,
+                                              "output_proj.weight": o_proj_weight})
     return multihead_self_attention.forward(in_features)
 
 
@@ -190,10 +190,10 @@ def run_multihead_self_attention_with_rope(
     """
     rope = RoPE(theta, d_model // num_heads, max_seq_len)
     multihead_self_attention = MultiheadSelfAttention(d_model, num_heads)
-    multihead_self_attention.load_state_dict({"q_proj_weight": q_proj_weight, 
-                                                "k_proj_weight": k_proj_weight,
-                                                "v_proj_weight": v_proj_weight,
-                                                "o_proj_weight": o_proj_weight})
+    multihead_self_attention.load_state_dict({"q_proj.weight": q_proj_weight, 
+                                                "k_proj.weight": k_proj_weight,
+                                                "v_proj.weight": v_proj_weight,
+                                                "output_proj.weight": o_proj_weight})
     return multihead_self_attention.forward(in_features, rope, token_positions)
 
 
@@ -291,7 +291,8 @@ def run_transformer_block(
         running the Transformer block on the input features while using RoPE.
     """
     rope = RoPE(theta, d_model // num_heads, max_seq_len)
-    transformer_block = TransformerBlock(d_model, num_heads, d_ff, weights, rope)
+    transformer_block = TransformerBlock(d_model, num_heads, d_ff, rope)
+    transformer_block.load_state_dict(weights)
     return transformer_block.forward(in_features)
 
 
@@ -374,7 +375,8 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    transformer_lm = TransformerLM(vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta, weights)
+    transformer_lm = TransformerLM(vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta)
+    transformer_lm.load_state_dict(weights)
     return transformer_lm.forward(in_indices)
 
 
@@ -399,7 +401,7 @@ def run_rmsnorm(
         RMSNorm of the `in_features`.
     """
     rmsnorm_layer = RMSNorm(d_model, eps)
-    rmsnorm_layer.load_state_dict({"weights": weights})
+    rmsnorm_layer.load_state_dict({"weight": weights})
     return rmsnorm_layer.forward(in_features)
 
 
@@ -539,7 +541,7 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    save_checkpoint(model, optimizer, iteration, out)
 
 
 def run_load_checkpoint(
@@ -560,7 +562,7 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    return load_checkpoint(src, model, optimizer)
 
 
 def get_tokenizer(
