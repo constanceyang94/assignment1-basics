@@ -1,4 +1,5 @@
 import argparse
+import numpy as np
 
 from cs336_basics.modules import * 
 
@@ -27,29 +28,63 @@ def parse_argument():
     parser.add_argument("--num-layers", type=int, default=4, help="num_layers for TransformerLM")
     parser.add_argument("--rope-theta", type=int, default=10000, help="rope_theta for TransformerLM")
     
+    # Paramaters for data loading
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
+    parser.add_argument("--training-path", type=str, help="input path to training data")
+    parser.add_argument("--validation-path", type=str, help="input path to validation data")
+    parser.add_argument("--checkpoint-path", type=str, help="path to store training checkpoint")
     
     args = parser.parse_args()
     return args
 
 # Transformer LM and forward for each batch, need adam optimizer
-def model_architecture(args):
+def model_architecture(args: argparse.Namespace):
     transformer_lm = TransformerLM(args.vocab_size, args.context_length, args.d_model, args.num_layers, 
-                                    args.num_heads, args.d_ff, args.rope_theta, weights)
+                                    args.num_heads, args.d_ff, args.rope_theta) 
+    adam = AdamW(transformer_lm.parameters(), args.lr, args.weight_decay, [args.beta1, args.beta2], args.eps) 
+    return transformer_lm, adam
     
-    return
-    
-# load training and validation dataset, and in batch way?
+def model_training(input: Int[Tensor, " batch_size sequence_length"], 
+                   label: Int[Tensor, " batch_size"], 
+                   transformer_lm: TransformerLM, 
+                   adam: AdamW):
+    adam.zero_grad()
+    prediction = transformer_lm.forward(input)
+    loss = cross_entropy(prediction, label)
+    loss.backward()
+    adam.step()
+    return loss
 
-# Save checkpoint?
+def val_loss(val_input: Int[Tensor, " batch_size sequence_length"], 
+             val_label: Int[Tensor, " batch_size"], 
+             transformer_lm: TransformerLM):
+    val_prediction = transformer_lm.forward(val_input)
+    val_loss = cross_entropy(val_prediction, val_label)
+    return val_loss
 
-# Print training/validation loss
+# load training and validation dataset
+def load_dataset(file_path: str):
+    dataset = np.memmap(file_path, dtype=np.int8, mode='r')
+    return dataset
 
-def main():
+def training_loop():
     args = parse_argument()
+    transformer_lm, adam = model_architecture(args)
+    training_data = load_dataset(args.training_path)
+    validation_data = load_dataset(args.validation_path)
+    for iteration in range(1000):
+        input_batch, label_batch = get_batch(training_data, args.batch_size, args.context_length, 'cpu')
+        training_loss = model_training(input_batch, label_batch, transformer_lm, adam)
+        print(f"At iteration {iteration}, training loss is {training_loss.item()}")
+        if iteration % 10 == 0:
+            validation_batch, label_batch = get_batch(validation_data, args.batch_size, args.context_length, 'cpu')
+            validation_loss = val_loss(validation_batch, label_batch, transformer_lm)
+            print(f"At iteration {iteration}, validation loss is {validation_loss.item()}")
+            save_checkpoint(transformer_lm, adam, iteration, args.checkpoint_path)
+    return
     
 
 if __name__ == "__main__":
     batch = 100
     lr = 0.1
-    print("abc")
+    training_loop()
