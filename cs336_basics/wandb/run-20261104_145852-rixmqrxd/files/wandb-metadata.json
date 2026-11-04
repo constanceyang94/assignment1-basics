@@ -1,0 +1,29 @@
+{
+  "os": "macOS-27.2-arm64-arm-64bit-Mach-O",
+  "python": "CPython 3.13.14",
+  "startedAt": "2026-11-04T22:58:52.354818Z",
+  "program": "/Users/zouxu/Desktop/CS336/Assignment1/assignment1-basics/cs336_basics/training_together.py",
+  "codePath": "cs336_basics/training_together.py",
+  "codePathLocal": "training_together.py",
+  "git": {
+    "remote": "git@github.com:constanceyang94/assignment1-basics.git",
+    "commit": "f76f4c1c0b843704fa29e6f7b01cf5c26efa458c"
+  },
+  "email": "constanceyang94@gmail.com",
+  "root": "/Users/zouxu/Desktop/CS336/Assignment1/assignment1-basics/cs336_basics",
+  "host": "Xus-MacBook-Air.local",
+  "executable": "/Users/zouxu/Desktop/CS336/Assignment1/assignment1-basics/.venv/bin/python3",
+  "cpu_count": 8,
+  "cpu_count_logical": 8,
+  "disk": {
+    "/": {
+      "total": "494384795648",
+      "used": "288387555328"
+    }
+  },
+  "memory": {
+    "total": "8589934592"
+  },
+  "apple": {},
+  "writerId": "6dwsk33idigiaciq9mh7kjtf95k22muy"
+}
