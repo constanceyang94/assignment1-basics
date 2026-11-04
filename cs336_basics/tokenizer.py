@@ -42,8 +42,7 @@ class Tokenizer:
         with open(merges_filepath, "r", encoding="utf-8") as f:
             lines = f.readlines()
         for l in lines:
-            items = l.strip("()").split(",")
-            merges.append((ast.literal_eval(items[0]), ast.literal_eval(items[1])))
+            merges.append(ast.literal_eval(l))
         return cls(vocab, merges, special_tokens)
 
     def encode(self, text: str) -> list[int]:
