@@ -1,8 +1,11 @@
 import argparse
 import numpy as np
 import wandb
+import time
 
 from cs336_basics.modules import * 
+from datetime import datetime
+from pathlib import Path
 
 
 TRAINING_PATH = "/Users/zouxu/Desktop/CS336/Assignment1/train_eval_data/TinyStoriesV2-GPT4-train.bin"
@@ -12,17 +15,18 @@ CHECKPOINT_PATH = "/Users/zouxu/Desktop/CS336/Assignment1/checkpoint/"
 # command line parsing
 def parse_argument():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--steps", type=int, default=4000, help="Training steps")
     
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--min-lr", type=float, default=1e-3, help="Min Learning rate for lr schedule")
-    parser.add_argument("--warmup-iters", type=int, default=10, help="Warm up iterations for lr schedule")
-    parser.add_argument("--max-iters", type=int, default=100, help="Max iterations for lr schedule")
+    parser.add_argument("--min-lr", type=float, default=1e-5, help="Min Learning rate for lr schedule")
+    parser.add_argument("--warmup-iters", type=int, default=100, help="Warm up iterations for lr schedule")
+    parser.add_argument("--cosine-cycle-iters", type=int, default=4000, help="Max iterations for lr schedule")
     
     # Hyper parameters for Adam
-    parser.add_argument("--beta1", type=float, default=1e-3, help="beta1 for Adam optimizer")
-    parser.add_argument("--beta2", type=float, default=1e-3, help="beta2 for Adam optimizer")
-    parser.add_argument("--eps", type=float, default=1e-3, help="eps for Adam optimizer")
-    parser.add_argument("--weight-decay", type=float, default=1e-3, help="weight_decay for Adam optimizer")
+    parser.add_argument("--beta1", type=float, default=0.9, help="beta1 for Adam optimizer")
+    parser.add_argument("--beta2", type=float, default=0.999, help="beta2 for Adam optimizer")
+    parser.add_argument("--eps", type=float, default=1e-8, help="eps for Adam optimizer")
+    parser.add_argument("--weight-decay", type=float, default=0.01, help="weight_decay for Adam optimizer")
     
     # Hyper parameter for TransformerLM
     parser.add_argument("--vocab-size", type=int, default=10000, help="vocab_size for TransformerLM")
@@ -52,11 +56,14 @@ def model_architecture(args: argparse.Namespace):
 def model_training(input: Int[Tensor, " batch_size sequence_length"], 
                    label: Int[Tensor, " batch_size"], 
                    transformer_lm: TransformerLM, 
-                   adam: AdamW):
+                   adam: AdamW,
+                   lr: float):
     adam.zero_grad()
     prediction = transformer_lm.forward(input)
     loss = cross_entropy(prediction, label)
     loss.backward()
+    for group in adam.param_groups:
+        group["alpha"] = lr
     adam.step()
     return loss
 
@@ -69,28 +76,46 @@ def val_loss(val_input: Int[Tensor, " batch_size sequence_length"],
 
 # load training and validation dataset
 def load_dataset(file_path: str):
-    dataset = np.memmap(file_path, dtype=np.int8, mode='r')
+    dataset = np.memmap(file_path, dtype=np.uint32, mode='r')
     return dataset
     
 def training_loop():
     # Initialize an experiment
+    args = parse_argument()
+    
     wandb.init(
         project="cs336-transformer",
         config={
-            "learning_rate": 1e-4,
-            "batch_size": 32,
-            "num_layers": 6,
+            "learning_rate": args.lr,
+            "min_lr": args.min_lr,
+            "warmup_iters": args.warmup_iters,
+            "cosine_cycle_iters": args.cosine_cycle_iters,
+            "beta1": args.beta1,
+            "beta2": args.beta2,
+            "eps": args.eps,
+            "weight_decay": args.weight_decay,
+            "batch_size": args.batch_size,
+            "num_layers": args.num_layers,
+            "num_heads": args.num_heads,
+            "context_length": args.context_length,
+            "d_model": args.d_model,
+            "steps": args.steps,
         }
     )
 
-    args = parse_argument()
     transformer_lm, adam = model_architecture(args)
     training_data = load_dataset(args.training_path)
     validation_data = load_dataset(args.validation_path)
+    cur_date = datetime.now().strftime("%Y-%m-%d")
+    checkpoint_path_dir = Path(args.checkpoint_path) / f"tiny_story_{cur_date}"
+    checkpoint_path_dir.mkdir(parents=True, exist_ok=True)
     
-    for step in range(1000):
+    for step in range(args.steps):
         input_batch, label_batch = get_batch(training_data, args.batch_size, args.context_length, 'cpu')
-        training_loss = model_training(input_batch, label_batch, transformer_lm, adam)
+        # torch.set_printoptions(threshold=float("inf"))
+        # print("training input batch is " + str(len(input_batch)))
+        lr = lr_cosine_schedule(step, args.lr, args.min_lr, args.warmup_iters, args.cosine_cycle_iters)
+        training_loss = model_training(input_batch, label_batch, transformer_lm, adam, lr)
         print(f"At step {step}, training loss is {training_loss.item()}")
         # Log metrics
         wandb.log({
@@ -101,7 +126,8 @@ def training_loop():
             validation_batch, label_batch = get_batch(validation_data, args.batch_size, args.context_length, 'cpu')
             validation_loss = val_loss(validation_batch, label_batch, transformer_lm)
             print(f"At step {step}, validation loss is {validation_loss.item()}")
-            save_checkpoint(transformer_lm, adam, step, args.checkpoint_path)
+            checkpoint_path_cur = Path(checkpoint_path_dir) / f"training_tiny_story_{step}_{int(time.time())}.pt"
+            save_checkpoint(transformer_lm, adam, step, checkpoint_path_cur)
             wandb.log({
                 "validation_loss": validation_loss,
                 "step": step,
@@ -111,6 +137,4 @@ def training_loop():
 
 
 if __name__ == "__main__":
-    batch = 100
-    lr = 0.1
     training_loop()

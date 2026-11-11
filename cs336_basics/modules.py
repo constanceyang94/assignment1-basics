@@ -91,7 +91,7 @@ def get_batch(dataset: npt.NDArray, batch_size: int, context_length: int,
     dataset_tensor = torch.from_numpy(dataset)
     input_tensor = dataset_tensor[input_index].to(device)
     label_tensor = dataset_tensor[label_index].to(device)
-    return (input_tensor, label_tensor)
+    return (input_tensor.to(torch.int64), label_tensor.to(torch.int64))
 
 def save_checkpoint(model: torch.nn.Module,
                     optimizer: torch.optim.Optimizer,
