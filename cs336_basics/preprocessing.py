@@ -36,7 +36,6 @@ def preprocess(tokenizer: Tokenizer, input_path: str, output_path: str):
     with open(input_path, "rb") as fin, \
          open(output_path, "wb") as fout:
         while True:
-            start = time.perf_counter()
             chunk = fin.read(CHUNK_SIZE)
             if not chunk:
                 break
@@ -46,12 +45,6 @@ def preprocess(tokenizer: Tokenizer, input_path: str, output_path: str):
                 chunk += remainder
 
             token_ids = tokenizer.encode(chunk.decode("utf-8"))
-            elapsed = time.perf_counter() - start
-            throughput = len(chunk) / (1024 ** 2) / elapsed
-            print(f"Encoding time: {elapsed:.2f}s")
-            print(f"Throughput: {throughput:.2f} MB/s")
-            print(f"Number of tokens: {len(token_ids):,}")
-            print(f"Estimated total time: {2124.6 / throughput / 60:.2f} minutes")
             np.asarray(token_ids, dtype=np.uint32).tofile(fout)
     return
 
@@ -59,8 +52,11 @@ if __name__ == "__main__":
     args = parse_argument()
     tokenizer = get_tokenizer(args)
     training_output_path = Path(args.output_path) / f"{Path(args.training_path).stem}.bin"
-    # print("training output path is " + str(training_output_path))
-    # preprocess(tokenizer, args.training_path, training_output_path)
+    print("training output path is " + str(training_output_path))
+    start = time.perf_counter()
+    preprocess(tokenizer, args.training_path, training_output_path)
+    elapsed = time.perf_counter() - start
+    print(f"Encoding time for training data: {elapsed:.2f}s")
     
     validation_file_name = Path(args.output_path) / f"{Path(args.validation_path).stem}.bin"
     preprocess(tokenizer, args.validation_path, validation_file_name)

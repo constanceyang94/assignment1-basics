@@ -1,0 +1,48 @@
+_wandb:
+    value:
+        cli_version: 0.25.1
+        e:
+            kcz81a9hx639qlm1663f88324fp5j4i6:
+                apple: {}
+                codePath: cs336_basics/training_together.py
+                codePathLocal: training_together.py
+                cpu_count: 8
+                cpu_count_logical: 8
+                disk:
+                    /:
+                        total: "494384795648"
+                        used: "294403948544"
+                email: constanceyang94@gmail.com
+                executable: /Users/zouxu/Desktop/CS336/Assignment1/assignment1-basics/.venv/bin/python3
+                git:
+                    commit: 8adff6e8e9b3ce851f3bb22031a5c425554e7daa
+                    remote: git@github.com:constanceyang94/assignment1-basics.git
+                host: Xus-MacBook-Air.local
+                memory:
+                    total: "8589934592"
+                os: macOS-27.2-arm64-arm-64bit-Mach-O
+                program: /Users/zouxu/Desktop/CS336/Assignment1/assignment1-basics/cs336_basics/training_together.py
+                python: CPython 3.13.14
+                root: /Users/zouxu/Desktop/CS336/Assignment1/assignment1-basics/cs336_basics
+                startedAt: "2026-11-05T01:40:03.575588Z"
+                writerId: kcz81a9hx639qlm1663f88324fp5j4i6
+        m: []
+        python_version: 3.13.14
+        t:
+            "1":
+                - 1
+            "2":
+                - 1
+            "3":
+                - 2
+                - 16
+            "4": 3.13.14
+            "5": 0.25.1
+            "12": 0.25.1
+            "13": darwin-arm64
+batch_size:
+    value: 32
+learning_rate:
+    value: 0.0001
+num_layers:
+    value: 6
