@@ -29,12 +29,12 @@ def parse_argument():
     checkpoint_path = "/workspace/checkpoints"
     
     parser = argparse.ArgumentParser()
-    parser.add_argument("--steps", type=int, default=4, help="Training steps")
+    parser.add_argument("--steps", type=int, default=5000, help="Training steps")
     
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--min-lr", type=float, default=1e-5, help="Min Learning rate for lr schedule")
     parser.add_argument("--warmup-iters", type=int, default=100, help="Warm up iterations for lr schedule")
-    parser.add_argument("--cosine-cycle-iters", type=int, default=4000, help="Max iterations for lr schedule")
+    parser.add_argument("--cosine-cycle-iters", type=int, default=5000, help="Max iterations for lr schedule")
     
     # Hyper parameters for Adam
     parser.add_argument("--beta1", type=float, default=0.9, help="beta1 for Adam optimizer")
@@ -63,7 +63,7 @@ def parse_argument():
 # Transformer LM and forward for each batch, need adam optimizer
 def model_architecture(args: argparse.Namespace, device):
     transformer_lm = TransformerLM(args.vocab_size, args.context_length, args.d_model, args.num_layers, 
-                                    args.num_heads, args.d_ff, args.rope_theta).to(device)
+                                    args.num_heads, args.d_ff, args.rope_theta, device=device)
     adam = AdamW(transformer_lm.parameters(), args.lr, args.weight_decay, [args.beta1, args.beta2], args.eps) 
     return transformer_lm, adam
     
@@ -100,6 +100,7 @@ def load_dataset(file_path: str):
         "/workspace": training_vol,          # Read train / val Data
     },
     secrets=[modal.Secret.from_name("wandb-secret")],
+    timeout=60 * 30,
 )
 def training_loop():
     # Initialize an experiment
